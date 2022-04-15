@@ -33,6 +33,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SIGNAL_BUTTON_PRESS 1
+#define OBJECT_DETECT 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -318,7 +319,6 @@ static void MX_GPIO_Init(void)
 // overwrite the HAL_GPIO_EXTI_Callback function
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if(GPIO_Pin == ExButton_Pin) {
-  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
   	osSignalSet(ExButtonIntTaskHandle, SIGNAL_BUTTON_PRESS);
   }
   if(GPIO_Pin == B1_Pin) {
@@ -340,7 +340,7 @@ void StartImuTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(10); // IMU signal every 0.01 sec
   }
   /* USER CODE END 5 */
 }
@@ -358,7 +358,7 @@ void StartGpsTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(100); // GPS signal every 0.1 sec
   }
   /* USER CODE END StartGpsTask */
 }
@@ -394,7 +394,8 @@ void StartRadarTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_OBJECT_DETECT);
+    osDelay(50); // Radar signal every 0.05 sec
   }
   /* USER CODE END StartRadarTask */
 }
@@ -439,6 +440,12 @@ void StartExButtonIntTask(void const * argument)
   	osSignalWait(SIGNAL_BUTTON_PRESS, osWaitForever);
   	// toggle led
   	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
+	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13);
+	  if (red_trig == GPIO_PIN_SET){
+		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+	  } else {
+		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+	  }
   }
   /* USER CODE END StartExButtonIntTask */
 }
