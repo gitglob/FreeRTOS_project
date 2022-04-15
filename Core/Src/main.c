@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -33,6 +32,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define SIGNAL_BUTTON_PRESS 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -41,14 +41,33 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart2;
+char MSG[35] = {'\0'};
 
+osThreadId ImuTaskHandle;
+osThreadId GpsTaskHandle;
+osThreadId KFTaskHandle;
+osThreadId RadarTaskHandle;
+osThreadId UartTaskHandle;
+osThreadId ExButtonIntTaskHandle;
+osThreadId LcdTaskHandle;
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void MX_FREERTOS_Init(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+void StartImuTask(void const * argument);
+void StartGpsTask(void const * argument);
+void StartKFTask(void const * argument);
+void StartRadarTask(void const * argument);
+void StartUartTask(void const * argument);
+void StartExButtonIntTask(void const * argument);
+void StartLcdTask(void const * argument);
+
+static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -86,13 +105,63 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART2_UART_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
 
-  /* Init scheduler */
-  osKernelInitialize();  /* Call init function for freertos objects (in freertos.c) */
-  MX_FREERTOS_Init();
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of ImuTask */
+  osThreadDef(ImuTask, StartImuTask, osPriorityNormal, 0, 128);
+  ImuTaskHandle = osThreadCreate(osThread(ImuTask), NULL);
+
+  /* definition and creation of GpsTask */
+  osThreadDef(GpsTask, StartGpsTask, osPriorityLow, 0, 128);
+  GpsTaskHandle = osThreadCreate(osThread(GpsTask), NULL);
+
+  /* definition and creation of KFTask */
+  osThreadDef(KFTask, StartKFTask, osPriorityLow, 0, 128);
+  KFTaskHandle = osThreadCreate(osThread(KFTask), NULL);
+
+  /* definition and creation of RadarTask */
+  osThreadDef(RadarTask, StartRadarTask, osPriorityLow, 0, 128);
+  RadarTaskHandle = osThreadCreate(osThread(RadarTask), NULL);
+
+  /* definition and creation of UartTask */
+  osThreadDef(UartTask, StartUartTask, osPriorityLow, 0, 128);
+  UartTaskHandle = osThreadCreate(osThread(UartTask), NULL);
+
+  /* definition and creation of ExButtonIntTask */
+  osThreadDef(ExButtonIntTask, StartExButtonIntTask, osPriorityHigh, 0, 128);
+  ExButtonIntTaskHandle = osThreadCreate(osThread(ExButtonIntTask), NULL);
+
+  /* definition and creation of LcdTask */
+  osThreadDef(LcdTask, StartLcdTask, osPriorityLow, 0, 128);
+  LcdTaskHandle = osThreadCreate(osThread(LcdTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
   /* Start scheduler */
   osKernelStart();
 
@@ -152,9 +221,245 @@ void SystemClock_Config(void)
   }
 }
 
-/* USER CODE BEGIN 4 */
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* EXTI15_10_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
 
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 9600;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, YellowLed_Pin|RedLed_Pin|GreenLed_Pin|BlueLed_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LD2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : YellowLed_Pin RedLed_Pin GreenLed_Pin BlueLed_Pin */
+  GPIO_InitStruct.Pin = YellowLed_Pin|RedLed_Pin|GreenLed_Pin|BlueLed_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ExButton_Pin */
+  GPIO_InitStruct.Pin = ExButton_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ExButton_GPIO_Port, &GPIO_InitStruct);
+
+}
+
+/* USER CODE BEGIN 4 */
+// overwrite the HAL_GPIO_EXTI_Callback function
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  if(GPIO_Pin == ExButton_Pin) {
+  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
+  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_BUTTON_PRESS);
+  }
+  if(GPIO_Pin == B1_Pin) {
+  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_BUTTON_PRESS);
+  }
+}
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartImuTask */
+/**
+  * @brief  Function implementing the ImuTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartImuTask */
+void StartImuTask(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartGpsTask */
+/**
+* @brief Function implementing the GpsTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartGpsTask */
+void StartGpsTask(void const * argument)
+{
+  /* USER CODE BEGIN StartGpsTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartGpsTask */
+}
+
+/* USER CODE BEGIN Header_StartKFTask */
+/**
+* @brief Function implementing the KFTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartKFTask */
+void StartKFTask(void const * argument)
+{
+  /* USER CODE BEGIN StartKFTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartKFTask */
+}
+
+/* USER CODE BEGIN Header_StartRadarTask */
+/**
+* @brief Function implementing the RadarTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartRadarTask */
+void StartRadarTask(void const * argument)
+{
+  /* USER CODE BEGIN StartRadarTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartRadarTask */
+}
+
+/* USER CODE BEGIN Header_StartUartTask */
+/**
+* @brief Function implementing the UartTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUartTask */
+void StartUartTask(void const * argument)
+{
+  /* USER CODE BEGIN StartUartTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartUartTask */
+}
+
+/* USER CODE BEGIN Header_StartExButtonIntTask */
+/**
+* @brief Function implementing the ExButtonIntTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartExButtonIntTask */
+void StartExButtonIntTask(void const * argument)
+{
+  /* USER CODE BEGIN StartExButtonIntTask */
+  /* Infinite loop */
+  for(;;)
+  {
+  	// print to uart
+  	sprintf(MSG, "Button pressed...\r\n");
+  //	HAL_StatusTypeDef HAL_UART_Transmit (UART_HandleTypeDef * huart, uint8_t * pData, uint16_t Size, uint32_t Timeout)
+  	HAL_UART_Transmit(&huart2, (uint8_t*) MSG, sizeof(MSG), 100);
+
+  	//wait for signal
+  	osSignalWait(SIGNAL_BUTTON_PRESS, osWaitForever);
+  	// toggle led
+  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
+  }
+  /* USER CODE END StartExButtonIntTask */
+}
+
+/* USER CODE BEGIN Header_StartLcdTask */
+/**
+* @brief Function implementing the LcdTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLcdTask */
+void StartLcdTask(void const * argument)
+{
+  /* USER CODE BEGIN StartLcdTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartLcdTask */
+}
 
 /**
   * @brief  Period elapsed callback in non blocking mode

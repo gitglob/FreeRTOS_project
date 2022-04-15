@@ -18,7 +18,6 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
-#include "FreeRTOS.h"
 #include "main.h"
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
@@ -32,7 +31,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -180,14 +178,9 @@ void TIM1_UP_TIM10_IRQHandler(void)
 void EXTI15_10_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI15_10_IRQn 0 */
-
   /* USER CODE END EXTI15_10_IRQn 0 */
-//  HAL_GPIO_EXTI_IRQHandler(B1_Pin);
-	HAL_GPIO_EXTI_IRQHandler(ExButton_Pin);
-
-	BaseType_t CheckIfYieldRequired;
-	CheckIfYieldRequired = xTaskResumeFromISR(ExButtonIntTaskHandle);
-	portYIELD_FROM_ISR(CheckIfYieldRequired);
+  HAL_GPIO_EXTI_IRQHandler(ExButton_Pin);
+  HAL_GPIO_EXTI_IRQHandler(B1_Pin);
   /* USER CODE BEGIN EXTI15_10_IRQn 1 */
 
   /* USER CODE END EXTI15_10_IRQn 1 */

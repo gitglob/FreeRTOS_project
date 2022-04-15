@@ -1,8 +1,1 @@
-../Core/Src/freertos.c:120:6:MX_FREERTOS_Init	8	static
-../Core/Src/freertos.c:180:6:StartImuTask	16	static
-../Core/Src/freertos.c:198:6:StartGpsTask	16	static
-../Core/Src/freertos.c:216:6:StartKFTask	16	static
-../Core/Src/freertos.c:234:6:StartRadarTask	16	static
-../Core/Src/freertos.c:252:6:StartUartTask	16	static
-../Core/Src/freertos.c:270:6:StartExButtonIntTask	16	static
-../Core/Src/freertos.c:289:6:StartLcdTask	16	static
+../Core/Src/freertos.c:62:6:vApplicationGetIdleTaskMemory	24	static
