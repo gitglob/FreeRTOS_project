@@ -56,11 +56,38 @@ osThreadId LcdTaskHandle;
 osThreadId MotorTaskHandle;
 osThreadId MainTaskHandle;
 osThreadId ObjectDetectTasHandle;
+osMessageQId UartQueueHandle;
+osMessageQId ImuQueueHandle;
+osMessageQId GpsQueueHandle;
 osMutexId PrintMtxHandle;
 /* USER CODE BEGIN PV */
 uint8_t Rx_byte;
 char Rx_indx, Transfer_cplt, Rx_Buffer[100];
-char msg[30] = {'\0'};
+uint8_t msg[30] = {'\0'};
+
+typedef struct
+{
+	uint32_t timestamp;
+	float lin_acc;
+	float ang_vel;
+
+} ImuData;
+
+
+typedef struct
+{
+	uint32_t timestamp;
+	float x;
+	float y;
+	float z;
+
+} GpsData;
+
+typedef struct
+{
+	uint32_t timestamp;
+	float coef;
+} UartData;
 
 /* USER CODE END PV */
 
@@ -142,6 +169,19 @@ int main(void)
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* definition and creation of UartQueue */
+  osMessageQDef(UartQueue, 1, UartData);
+  UartQueueHandle = osMessageCreate(osMessageQ(UartQueue), NULL);
+
+  /* definition and creation of ImuQueue */
+  osMessageQDef(ImuQueue, 1, ImuData);
+  ImuQueueHandle = osMessageCreate(osMessageQ(ImuQueue), NULL);
+
+  /* definition and creation of GpsQueue */
+  osMessageQDef(GpsQueue, 1, GpsData);
+  GpsQueueHandle = osMessageCreate(osMessageQ(GpsQueue), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -417,10 +457,22 @@ void StartImuTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(10); // IMU signal every 0.01 sec
+  	// Get the RTOS kernel tick count
+  	uint32_t  t =  osKernelSysTick();
+
+  	// pseudo-measurements -  we assume that the the IMU gives perfect measurements that indicate that the vehicle moves in a circle with constant speeds
+  	float imu_lin_acc = 0.1;
+  	float imu_ang_vel = 0.2;
+  	ImuData imu_readings = {t, imu_lin_acc, imu_ang_vel};
+
+  	// send the data to the queue
+  	osMessagePut(ImuQueueHandle, (uint32_t) &imu_readings, 100);
+
+  	osDelay(10); // IMU signal every 0.01 sec
   }
   /* USER CODE END 5 */
 }
@@ -440,10 +492,23 @@ void StartGpsTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
-  /* Infinite loop */
+
+	/* Infinite loop */
   for(;;)
   {
-    osDelay(100); // GPS signal every 0.1 sec
+  	// Get the RTOS kernel tick count
+  	uint32_t  t =  osKernelSysTick();
+
+  	// GPS pseudo-measurements
+  	float gps_x = 1.1;
+  	float gps_y = 2.2;
+  	float gps_z = 3.3;
+  	GpsData gps_readings = {t, gps_x, gps_y, gps_z};
+
+  	// send the data to the queue
+  	osMessagePut(GpsQueueHandle, (uint32_t) &gps_readings, 100);
+
+  	osDelay(100); // GPS signal every 0.1 sec
   }
   /* USER CODE END StartGpsTask */
 }
@@ -463,10 +528,24 @@ void StartKFTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
-  /* Infinite loop */
+
+	/* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+  	// Get the RTOS kernel tick count
+  	uint32_t  t =  osKernelSysTick();
+
+  	// receive GPS and IMU data from queues
+  	osEvent retval_imu = osMessageGet(ImuQueueHandle, 0);
+//  	((ImuData*)retval_imu.value.p)->timestamp;
+//  	((ImuData*)retval_imu.value.p)->lin_acc;
+//  	((ImuData*)retval_imu.value.p)->ang_vel;
+  	osEvent retval_gps = osMessageGet(ImuQueueHandle, 0);
+//  	((GpsData*)retval_imu.value.p)->timestamp;
+//  	((GpsData*)retval_imu.value.p)->x;
+//  	((GpsData*)retval_imu.value.p)->y;
+//  	((GpsData*)retval_imu.value.p)->z;
+
   }
   /* USER CODE END StartKFTask */
 }
@@ -486,9 +565,19 @@ void StartRadarTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
-  /* Infinite loop */
+
+	/* Infinite loop */
   for(;;)
   {
+  	// Get the RTOS kernel tick count
+  	uint32_t  t =  osKernelSysTick();
+
+  	osMutexWait(PrintMtxHandle, osWaitForever);
+  	sprintf(msg, "Object detected. Time: %lu\r\n", t);
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+  	osMutexRelease(PrintMtxHandle);
+
 //  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_OBJECT_DETECT);
     osDelay(50); // Radar signal every 0.05 sec
   }
@@ -669,16 +758,6 @@ void StartObjectDetectTask(void const * argument)
   /* USER CODE END StartObjectDetectTask */
 }
 
-// helper function to clear a string
-void EmptyBuffer(char* buf){
-	uint8_t i;
-	int s = strlen(buf);
-
-	for (i=0; i<s; i++) {
-		buf[i] = 0;
-	}
-}
-
 /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM10 interrupt took place, inside
@@ -698,6 +777,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 1 */
 
   /* USER CODE END Callback 1 */
+}
+
+// helper function to clear a string
+void EmptyBuffer(char* buf){
+	uint8_t i;
+	int s = strlen(buf);
+
+	for (i=0; i<s; i++) {
+		buf[i] = 0;
+	}
 }
 
 /**
