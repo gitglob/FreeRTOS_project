@@ -33,7 +33,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SIGNAL_BUTTON_PRESS 1
-#define OBJECT_DETECT 1
+#define SIGNAL_UART 1
+#define SIGNAL_OBJECT_DETECT 1
+#define SIGNAL_MOTOR 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -43,7 +45,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
-char MSG[35] = {'\0'};
 
 osThreadId ImuTaskHandle;
 osThreadId GpsTaskHandle;
@@ -52,7 +53,14 @@ osThreadId RadarTaskHandle;
 osThreadId UartTaskHandle;
 osThreadId ExButtonIntTaskHandle;
 osThreadId LcdTaskHandle;
+osThreadId MotorTaskHandle;
+osThreadId MainTaskHandle;
+osThreadId ObjectDetectTasHandle;
+osMutexId PrintMtxHandle;
 /* USER CODE BEGIN PV */
+uint8_t Rx_byte;
+char Rx_indx, Transfer_cplt, Rx_Buffer[100];
+char msg[30] = {'\0'};
 
 /* USER CODE END PV */
 
@@ -67,10 +75,14 @@ void StartRadarTask(void const * argument);
 void StartUartTask(void const * argument);
 void StartExButtonIntTask(void const * argument);
 void StartLcdTask(void const * argument);
+void StartMotorTask(void const * argument);
+void StartMainTask(void const * argument);
+void StartObjectDetectTask(void const * argument);
 
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
-
+// UART callback
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -114,6 +126,11 @@ int main(void)
 
   /* USER CODE END 2 */
 
+  /* Create the mutex(es) */
+  /* definition and creation of PrintMtx */
+  osMutexDef(PrintMtx);
+  PrintMtxHandle = osMutexCreate(osMutex(PrintMtx));
+
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
@@ -132,7 +149,7 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of ImuTask */
-  osThreadDef(ImuTask, StartImuTask, osPriorityNormal, 0, 128);
+  osThreadDef(ImuTask, StartImuTask, osPriorityLow, 0, 128);
   ImuTaskHandle = osThreadCreate(osThread(ImuTask), NULL);
 
   /* definition and creation of GpsTask */
@@ -158,6 +175,18 @@ int main(void)
   /* definition and creation of LcdTask */
   osThreadDef(LcdTask, StartLcdTask, osPriorityLow, 0, 128);
   LcdTaskHandle = osThreadCreate(osThread(LcdTask), NULL);
+
+  /* definition and creation of MotorTask */
+  osThreadDef(MotorTask, StartMotorTask, osPriorityAboveNormal, 0, 128);
+  MotorTaskHandle = osThreadCreate(osThread(MotorTask), NULL);
+
+  /* definition and creation of MainTask */
+  osThreadDef(MainTask, StartMainTask, osPriorityNormal, 0, 128);
+  MainTaskHandle = osThreadCreate(osThread(MainTask), NULL);
+
+  /* definition and creation of ObjectDetectTas */
+  osThreadDef(ObjectDetectTas, StartObjectDetectTask, osPriorityHigh, 0, 128);
+  ObjectDetectTasHandle = osThreadCreate(osThread(ObjectDetectTas), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -325,6 +354,52 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   	osSignalSet(ExButtonIntTaskHandle, SIGNAL_BUTTON_PRESS);
   }
 }
+
+// interrupt callback method - when the data reception is complete, this is called
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	 // current UART
+	uint8_t i;
+
+	if (huart->Instance == USART2) {
+  	// Clear Rx_Buffer prior to use
+  	if (Rx_indx == 0) {
+    	// turn on the yellow led
+    	HAL_GPIO_WritePin(YellowLed_GPIO_Port, YellowLed_Pin, GPIO_PIN_SET);
+    	EmptyBuffer(Rx_Buffer);
+  	}
+
+  	// check for carriage return (ASCII: 13 == \r)
+  	if (Rx_byte != 13) {
+  		Rx_Buffer[Rx_indx++] = Rx_byte; // add data to Rx_Buffer
+  	} else {
+  		Rx_indx = 0;
+  		Transfer_cplt = 1; // transfer complete, data is ready
+
+  		// LED trigger phrase
+  		if (strcmp(Rx_Buffer, "faster") == 0) {
+  			sprintf(msg, "Accelerating!");
+  		} else if (strcmp(Rx_Buffer, "slower")  == 0) {
+  			sprintf(msg, "Decelerating!");
+  		} else {
+  			sprintf(msg, "Unknown command.");
+  		}
+
+  		// send to UART
+  		HAL_UART_Transmit(&huart2, "\n\r", 2, 100);
+  		HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  		HAL_UART_Transmit(&huart2, "\n\r", 2, 100);
+    	EmptyBuffer(msg);
+
+    	// turn off the yellow led
+    	HAL_GPIO_WritePin(YellowLed_GPIO_Port, YellowLed_Pin, GPIO_PIN_RESET);
+  	}
+
+  	// activate UART
+  	HAL_UART_Receive_IT(&huart2, &Rx_byte, 1);
+  	// send to UART
+  	HAL_UART_Transmit(&huart2, &Rx_byte, 1, 100);
+	}
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartImuTask */
@@ -337,6 +412,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 void StartImuTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "IMU GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
@@ -355,6 +435,11 @@ void StartImuTask(void const * argument)
 void StartGpsTask(void const * argument)
 {
   /* USER CODE BEGIN StartGpsTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "GPS GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
@@ -373,6 +458,11 @@ void StartGpsTask(void const * argument)
 void StartKFTask(void const * argument)
 {
   /* USER CODE BEGIN StartKFTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "KF GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
@@ -391,10 +481,15 @@ void StartKFTask(void const * argument)
 void StartRadarTask(void const * argument)
 {
   /* USER CODE BEGIN StartRadarTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "Radar GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
-  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_OBJECT_DETECT);
+//  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_OBJECT_DETECT);
     osDelay(50); // Radar signal every 0.05 sec
   }
   /* USER CODE END StartRadarTask */
@@ -410,10 +505,14 @@ void StartRadarTask(void const * argument)
 void StartUartTask(void const * argument)
 {
   /* USER CODE BEGIN StartUartTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "UART GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
   }
   /* USER CODE END StartUartTask */
 }
@@ -428,16 +527,22 @@ void StartUartTask(void const * argument)
 void StartExButtonIntTask(void const * argument)
 {
   /* USER CODE BEGIN StartExButtonIntTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "ExButton GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
-  	// print to uart
-  	sprintf(MSG, "Button pressed...\r\n");
-  //	HAL_StatusTypeDef HAL_UART_Transmit (UART_HandleTypeDef * huart, uint8_t * pData, uint16_t Size, uint32_t Timeout)
-  	HAL_UART_Transmit(&huart2, (uint8_t*) MSG, sizeof(MSG), 100);
-
   	//wait for signal
   	osSignalWait(SIGNAL_BUTTON_PRESS, osWaitForever);
+
+  	// print to uart
+  	sprintf(msg, "Button pressed...\r\n");
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+
   	// toggle led
   	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
 	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13);
@@ -460,12 +565,118 @@ void StartExButtonIntTask(void const * argument)
 void StartLcdTask(void const * argument)
 {
   /* USER CODE BEGIN StartLcdTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "LCD GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
   /* USER CODE END StartLcdTask */
+}
+
+/* USER CODE BEGIN Header_StartMotorTask */
+/**
+* @brief Function implementing the MotorTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartMotorTask */
+void StartMotorTask(void const * argument)
+{
+  /* USER CODE BEGIN StartMotorTask */
+  /* Infinite loop */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "Motor GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
+	int lin_vel = 14; // 14 m/sec linear velocity
+	int ang_vel = 0.2; // 0.2 rad/sec angular velocity
+  for(;;)
+  {
+  	// block until resumed
+  	osThreadSuspend(NULL);
+  }
+  /* USER CODE END StartMotorTask */
+}
+
+/* USER CODE BEGIN Header_StartMainTask */
+/**
+* @brief Function implementing the MainTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartMainTask */
+void StartMainTask(void const * argument)
+{
+  /* USER CODE BEGIN StartMainTask */
+  /* Infinite loop */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "Main GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
+	EmptyBuffer(msg);
+	sprintf(msg, "Enabling UART...\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
+	// enable UART receive
+	HAL_UART_Receive_IT(&huart2, &Rx_byte, 1);
+  for(;;)
+  {
+  	sprintf(msg, "-Main\r\n");
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+
+  	// suspend main until it is resumed
+  	osThreadSuspend(NULL);
+  }
+  /* USER CODE END StartMainTask */
+}
+
+/* USER CODE BEGIN Header_StartObjectDetectTask */
+/**
+* @brief Function implementing the ObjectDetectTas thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartObjectDetectTask */
+void StartObjectDetectTask(void const * argument)
+{
+  /* USER CODE BEGIN StartObjectDetectTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "ObjDetect GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
+  /* Infinite loop */
+  for(;;)
+  {
+  	//wait for signal
+  	osSignalWait(SIGNAL_OBJECT_DETECT, osWaitForever);
+
+  	// print to uart
+  	sprintf(msg, "Object detected...\r\n");
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+
+  	// toggle led
+  	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
+  }
+  /* USER CODE END StartObjectDetectTask */
+}
+
+// helper function to clear a string
+void EmptyBuffer(char* buf){
+	uint8_t i;
+	int s = strlen(buf);
+
+	for (i=0; i<s; i++) {
+		buf[i] = 0;
+	}
 }
 
 /**
