@@ -566,20 +566,42 @@ void StartRadarTask(void const * argument)
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
 
-	/* Infinite loop */
+	// counter to periodically pseudo-detect an object
+	uint8_t i = 0; // 8 bits means that after 256 it goes back to 0
   for(;;)
   {
   	// Get the RTOS kernel tick count
   	uint32_t  t =  osKernelSysTick();
 
-  	osMutexWait(PrintMtxHandle, osWaitForever);
-  	sprintf(msg, "Object detected. Time: %lu\r\n", t);
-  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-  	EmptyBuffer(msg);
-  	osMutexRelease(PrintMtxHandle);
+  	// at iteration #200 and every 256 (2^8) iterations, "detect an object"
+  	if (i == 200){
+    	osMutexWait(PrintMtxHandle, osWaitForever);
+    	sprintf(msg, "An object!\r\n");
+    	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+    	EmptyBuffer(msg);
+    	osMutexRelease(PrintMtxHandle);
 
-//  	osSignalSet(ExButtonIntTaskHandle, SIGNAL_OBJECT_DETECT);
-    osDelay(50); // Radar signal every 0.05 sec
+    	// when detecting an object, send a signal to the object-detection-handle thread
+			osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
+  	}
+
+  	// stop detecting the object 50 iterations after you detected it
+  	if (i == 250){
+    	osMutexWait(PrintMtxHandle, osWaitForever);
+    	sprintf(msg, "No objects.\r\n");
+    	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+    	EmptyBuffer(msg);
+    	osMutexRelease(PrintMtxHandle);
+
+    	// signal to the object-detection thread that we no longer detect an object
+			osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
+  	}
+
+  	// Radar signal every 0.05 sec
+    osDelay(50);
+
+    // increment counter
+    ++i;
   }
   /* USER CODE END StartRadarTask */
 }
@@ -748,12 +770,12 @@ void StartObjectDetectTask(void const * argument)
   	osSignalWait(SIGNAL_OBJECT_DETECT, osWaitForever);
 
   	// print to uart
-  	sprintf(msg, "Object detected...\r\n");
-  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	sprintf(msg, "~~ Object (un)detected ~~\r\n");
+  	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
   	EmptyBuffer(msg);
 
   	// toggle led
-  	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
+  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_15);
   }
   /* USER CODE END StartObjectDetectTask */
 }
