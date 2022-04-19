@@ -50,26 +50,41 @@ osThreadId ImuTaskHandle;
 osThreadId GpsTaskHandle;
 osThreadId KFTaskHandle;
 osThreadId RadarTaskHandle;
-osThreadId UartTaskHandle;
 osThreadId ExButtonIntTaskHandle;
 osThreadId LcdTaskHandle;
 osThreadId MotorTaskHandle;
 osThreadId MainTaskHandle;
 osThreadId ObjectDetectTasHandle;
+osThreadId UartTaskHandle;
 osMessageQId UartQueueHandle;
 osMessageQId ImuQueueHandle;
 osMessageQId GpsQueueHandle;
+osMessageQId ButtonQueueHandle;
 osMutexId PrintMtxHandle;
+osSemaphoreId VelSemaphoreHandle;
 /* USER CODE BEGIN PV */
-uint8_t Rx_byte;
-char Rx_indx, Transfer_cplt, Rx_Buffer[100];
-uint8_t msg[30] = {'\0'};
+uint8_t Rx_byte, Rx_indx, Transfer_cplt, Rx_Buffer[100], msg[40]; // UART
+int8_t v, w; // vehicle velocities
+
+typedef struct
+{
+	float ax;
+	float ay;
+	float az;
+} LinAcc;
+
+typedef struct
+{
+	float wx;
+	float wy;
+	float wz;
+} AngVel;
 
 typedef struct
 {
 	uint32_t timestamp;
-	float lin_acc;
-	float ang_vel;
+	LinAcc lin_acc;
+	AngVel ang_vel;
 
 } ImuData;
 
@@ -99,17 +114,18 @@ void StartImuTask(void const * argument);
 void StartGpsTask(void const * argument);
 void StartKFTask(void const * argument);
 void StartRadarTask(void const * argument);
-void StartUartTask(void const * argument);
 void StartExButtonIntTask(void const * argument);
 void StartLcdTask(void const * argument);
 void StartMotorTask(void const * argument);
 void StartMainTask(void const * argument);
 void StartObjectDetectTask(void const * argument);
+void StartUartTask(void const * argument);
 
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 // UART callback
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void EmptyBuffer(char* buf);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -162,6 +178,11 @@ int main(void)
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
+  /* Create the semaphores(s) */
+  /* definition and creation of VelSemaphore */
+  osSemaphoreDef(VelSemaphore);
+  VelSemaphoreHandle = osSemaphoreCreate(osSemaphore(VelSemaphore), 1);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
@@ -172,7 +193,7 @@ int main(void)
 
   /* Create the queue(s) */
   /* definition and creation of UartQueue */
-  osMessageQDef(UartQueue, 1, UartData);
+  osMessageQDef(UartQueue, 1, int8_t);
   UartQueueHandle = osMessageCreate(osMessageQ(UartQueue), NULL);
 
   /* definition and creation of ImuQueue */
@@ -182,6 +203,10 @@ int main(void)
   /* definition and creation of GpsQueue */
   osMessageQDef(GpsQueue, 1, GpsData);
   GpsQueueHandle = osMessageCreate(osMessageQ(GpsQueue), NULL);
+
+  /* definition and creation of ButtonQueue */
+  osMessageQDef(ButtonQueue, 1, uint8_t);
+  ButtonQueueHandle = osMessageCreate(osMessageQ(ButtonQueue), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -204,10 +229,6 @@ int main(void)
   osThreadDef(RadarTask, StartRadarTask, osPriorityLow, 0, 128);
   RadarTaskHandle = osThreadCreate(osThread(RadarTask), NULL);
 
-  /* definition and creation of UartTask */
-  osThreadDef(UartTask, StartUartTask, osPriorityLow, 0, 128);
-  UartTaskHandle = osThreadCreate(osThread(UartTask), NULL);
-
   /* definition and creation of ExButtonIntTask */
   osThreadDef(ExButtonIntTask, StartExButtonIntTask, osPriorityHigh, 0, 128);
   ExButtonIntTaskHandle = osThreadCreate(osThread(ExButtonIntTask), NULL);
@@ -227,6 +248,10 @@ int main(void)
   /* definition and creation of ObjectDetectTas */
   osThreadDef(ObjectDetectTas, StartObjectDetectTask, osPriorityHigh, 0, 128);
   ObjectDetectTasHandle = osThreadCreate(osThread(ObjectDetectTas), NULL);
+
+  /* definition and creation of UartTask */
+  osThreadDef(UartTask, StartUartTask, osPriorityAboveNormal, 0, 128);
+  UartTaskHandle = osThreadCreate(osThread(UartTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -397,9 +422,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
 // interrupt callback method - when the data reception is complete, this is called
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	 // current UART
-	uint8_t i;
+	uint8_t flag; // accelerate -> 1, decelerate -> 0, else -> don't do anything
 
+	 // current UART
 	if (huart->Instance == USART2) {
   	// Clear Rx_Buffer prior to use
   	if (Rx_indx == 0) {
@@ -418,10 +443,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   		// LED trigger phrase
   		if (strcmp(Rx_Buffer, "faster") == 0) {
   			sprintf(msg, "Accelerating!");
+  			flag = 1;
   		} else if (strcmp(Rx_Buffer, "slower")  == 0) {
   			sprintf(msg, "Decelerating!");
+  			flag = 0;
   		} else {
   			sprintf(msg, "Unknown command.");
+  			flag = 2;
   		}
 
   		// send to UART
@@ -429,6 +457,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   		HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   		HAL_UART_Transmit(&huart2, "\n\r", 2, 100);
     	EmptyBuffer(msg);
+
+    	// send flag to the UartThread via a queue
+	  	osMessagePut(UartQueueHandle, flag, 100);
 
     	// turn off the yellow led
     	HAL_GPIO_WritePin(YellowLed_GPIO_Port, YellowLed_Pin, GPIO_PIN_RESET);
@@ -465,8 +496,8 @@ void StartImuTask(void const * argument)
   	uint32_t  t =  osKernelSysTick();
 
   	// pseudo-measurements -  we assume that the the IMU gives perfect measurements that indicate that the vehicle moves in a circle with constant speeds
-  	float imu_lin_acc = 0.1;
-  	float imu_ang_vel = 0.2;
+  	LinAcc imu_lin_acc = {0.1, 0.0, 0.0};
+  	AngVel imu_ang_vel = {0.0, 0.0, 0.2};
   	ImuData imu_readings = {t, imu_lin_acc, imu_ang_vel};
 
   	// send the data to the queue
@@ -540,7 +571,7 @@ void StartKFTask(void const * argument)
 //  	((ImuData*)retval_imu.value.p)->timestamp;
 //  	((ImuData*)retval_imu.value.p)->lin_acc;
 //  	((ImuData*)retval_imu.value.p)->ang_vel;
-  	osEvent retval_gps = osMessageGet(ImuQueueHandle, 0);
+  	osEvent retval_gps = osMessageGet(GpsQueueHandle, 0);
 //  	((GpsData*)retval_imu.value.p)->timestamp;
 //  	((GpsData*)retval_imu.value.p)->x;
 //  	((GpsData*)retval_imu.value.p)->y;
@@ -606,28 +637,6 @@ void StartRadarTask(void const * argument)
   /* USER CODE END StartRadarTask */
 }
 
-/* USER CODE BEGIN Header_StartUartTask */
-/**
-* @brief Function implementing the UartTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartUartTask */
-void StartUartTask(void const * argument)
-{
-  /* USER CODE BEGIN StartUartTask */
-	osMutexWait(PrintMtxHandle, osWaitForever);
-	sprintf(msg, "UART GO\r\n");
-	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-	EmptyBuffer(msg);
-	osMutexRelease(PrintMtxHandle);
-  /* Infinite loop */
-  for(;;)
-  {
-  }
-  /* USER CODE END StartUartTask */
-}
-
 /* USER CODE BEGIN Header_StartExButtonIntTask */
 /**
 * @brief Function implementing the ExButtonIntTask thread.
@@ -658,8 +667,26 @@ void StartExButtonIntTask(void const * argument)
   	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
 	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13);
 	  if (red_trig == GPIO_PIN_SET){
+	  	// stop the vehicle!!
+	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+	  	v = 0; // update the velocity references
+	  	w = 0;
+	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	  	EmptyBuffer(msg);
+	  	osSemaphoreRelease(VelSemaphoreHandle);
+	  	// turn on red light
 		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
 	  } else {
+	  	// start the vehicle
+	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+	  	v = 10; // update the velocity references
+	  	w = 0;
+	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	  	EmptyBuffer(msg);
+	  	osSemaphoreRelease(VelSemaphoreHandle);
+	  	// turn on the green light
 		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
 	  }
   }
@@ -705,12 +732,14 @@ void StartMotorTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
-	int lin_vel = 14; // 14 m/sec linear velocity
-	int ang_vel = 0.2; // 0.2 rad/sec angular velocity
+	v = 14; // 14 m/sec linear velocity
+	w = 0.2; // 0.2 rad/sec angular velocity
   for(;;)
   {
   	// block until resumed
   	osThreadSuspend(NULL);
+
+  	// here, we can feed the incoming velocity references to the PID controller after another thread calls osThreadResume(MotorTaskHandle)
   }
   /* USER CODE END StartMotorTask */
 }
@@ -725,7 +754,6 @@ void StartMotorTask(void const * argument)
 void StartMainTask(void const * argument)
 {
   /* USER CODE BEGIN StartMainTask */
-  /* Infinite loop */
 	osMutexWait(PrintMtxHandle, osWaitForever);
 	sprintf(msg, "Main GO\r\n");
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
@@ -734,8 +762,11 @@ void StartMainTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
+
 	// enable UART receive
 	HAL_UART_Receive_IT(&huart2, &Rx_byte, 1);
+
+  /* Infinite loop */
   for(;;)
   {
   	sprintf(msg, "-Main\r\n");
@@ -774,10 +805,78 @@ void StartObjectDetectTask(void const * argument)
   	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
   	EmptyBuffer(msg);
 
+  	// stop the vehicle!!
+  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+  	v = 0; // update the velocity references
+  	w = 0;
+  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
+  	EmptyBuffer(msg);
+  	osSemaphoreRelease(VelSemaphoreHandle);
+
   	// toggle led
   	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_15);
   }
   /* USER CODE END StartObjectDetectTask */
+}
+
+/* USER CODE BEGIN Header_StartUartTask */
+/**
+* @brief Function implementing the UartTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUartTask */
+void StartUartTask(void const * argument)
+{
+  /* USER CODE BEGIN StartUartTask */
+	osMutexWait(PrintMtxHandle, osWaitForever);
+	sprintf(msg, "ObjDetect GO\r\n");
+	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+	EmptyBuffer(msg);
+	osMutexRelease(PrintMtxHandle);
+  /* Infinite loop */
+  for(;;)
+  {
+  	//wait for signal
+  	osEvent retval_uart = osMessageGet(UartQueueHandle, osWaitForever);
+  	uint8_t accel_flag = retval_uart.value.p;
+
+  	osMutexWait(PrintMtxHandle, osWaitForever);
+  	sprintf(msg, "Flag: %lu\r\n", accel_flag);
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+  	osMutexRelease(PrintMtxHandle);
+
+  	// if the passed flag is 1, we accelerate by 10%, otherwise, we decelerate by 10%
+  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+  	if (accel_flag == 1) {
+  		if ( v == 0 ) {
+  			v = 10;
+  		} else {
+    		v = v*1.1;
+  		}
+  	} else if (accel_flag == 0){
+			if ( v != 0 ) {
+				v = v*0.9;
+			}
+  	}
+  	sprintf(msg, "Lin. vel: %d.%d Ang vel: %d.%d\r\n", v/10, v%10, w/10, w%10);
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+  	osSemaphoreRelease(VelSemaphoreHandle);
+  }
+  /* USER CODE END StartUartTask */
+}
+
+// helper function to empty the contents of a buffer
+void EmptyBuffer(char* buf){
+	uint8_t i;
+	int s = strlen(buf);
+
+	for (i=0; i<s; i++) {
+		buf[i] = 0;
+	}
 }
 
 /**
@@ -799,16 +898,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 1 */
 
   /* USER CODE END Callback 1 */
-}
-
-// helper function to clear a string
-void EmptyBuffer(char* buf){
-	uint8_t i;
-	int s = strlen(buf);
-
-	for (i=0; i<s; i++) {
-		buf[i] = 0;
-	}
 }
 
 /**

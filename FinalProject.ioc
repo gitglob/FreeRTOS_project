@@ -1,9 +1,10 @@
 #MicroXplorer Configuration settings - do not modify
+FREERTOS.BinarySemaphores01=VelSemaphore,Dynamic,NULL
 FREERTOS.FootprintOK=true
-FREERTOS.IPParameters=Tasks01,FootprintOK,Mutexes01,Queues01
+FREERTOS.IPParameters=Tasks01,FootprintOK,Mutexes01,Queues01,BinarySemaphores01
 FREERTOS.Mutexes01=PrintMtx,Dynamic,NULL
-FREERTOS.Queues01=UartQueue,1,UartData,0,Dynamic,NULL,NULL;ImuQueue,1,ImuData,0,Dynamic,NULL,NULL;GpsQueue,1,GpsData,0,Dynamic,NULL,NULL
-FREERTOS.Tasks01=ImuTask,-2,128,StartImuTask,Default,NULL,Dynamic,NULL,NULL;GpsTask,-2,128,StartGpsTask,Default,NULL,Dynamic,NULL,NULL;KFTask,-2,128,StartKFTask,Default,NULL,Dynamic,NULL,NULL;RadarTask,-2,128,StartRadarTask,Default,NULL,Dynamic,NULL,NULL;UartTask,-2,128,StartUartTask,Default,NULL,Dynamic,NULL,NULL;ExButtonIntTask,2,128,StartExButtonIntTask,Default,NULL,Dynamic,NULL,NULL;LcdTask,-2,128,StartLcdTask,Default,NULL,Dynamic,NULL,NULL;MotorTask,1,128,StartMotorTask,Default,NULL,Dynamic,NULL,NULL;MainTask,0,128,StartMainTask,Default,NULL,Dynamic,NULL,NULL;ObjectDetectTas,2,128,StartObjectDetectTask,Default,NULL,Dynamic,NULL,NULL
+FREERTOS.Queues01=UartQueue,1,int8_t,0,Dynamic,NULL,NULL;ImuQueue,1,ImuData,0,Dynamic,NULL,NULL;GpsQueue,1,GpsData,0,Dynamic,NULL,NULL;ButtonQueue,1,uint8_t,0,Dynamic,NULL,NULL
+FREERTOS.Tasks01=ImuTask,-2,128,StartImuTask,Default,NULL,Dynamic,NULL,NULL;GpsTask,-2,128,StartGpsTask,Default,NULL,Dynamic,NULL,NULL;KFTask,-2,128,StartKFTask,Default,NULL,Dynamic,NULL,NULL;RadarTask,-2,128,StartRadarTask,Default,NULL,Dynamic,NULL,NULL;ExButtonIntTask,2,128,StartExButtonIntTask,Default,NULL,Dynamic,NULL,NULL;LcdTask,-2,128,StartLcdTask,Default,NULL,Dynamic,NULL,NULL;MotorTask,1,128,StartMotorTask,Default,NULL,Dynamic,NULL,NULL;MainTask,0,128,StartMainTask,Default,NULL,Dynamic,NULL,NULL;ObjectDetectTas,2,128,StartObjectDetectTask,Default,NULL,Dynamic,NULL,NULL;UartTask,1,128,StartUartTask,Default,NULL,Dynamic,NULL,NULL
 File.Version=6
 GPIO.groupedBy=Group By Peripherals
 KeepUserPlacement=false
