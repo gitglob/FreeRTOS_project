@@ -77,6 +77,10 @@ void Error_Handler(void);
 #define GreenLed_GPIO_Port GPIOB
 #define BlueLed_Pin GPIO_PIN_15
 #define BlueLed_GPIO_Port GPIOB
+#define Echo_Pin GPIO_PIN_8
+#define Echo_GPIO_Port GPIOA
+#define Trig_Pin GPIO_PIN_9
+#define Trig_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14

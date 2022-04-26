@@ -34,8 +34,8 @@
 /* USER CODE BEGIN PD */
 #define SIGNAL_BUTTON_PRESS 1
 #define SIGNAL_UART 1
-#define SIGNAL_OBJECT_DETECT 1
 #define SIGNAL_MOTOR 1
+#define SIGNAL_OBJECT_DETECT 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,6 +44,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim1;
+
 UART_HandleTypeDef huart2;
 
 osThreadId ImuTaskHandle;
@@ -51,7 +53,6 @@ osThreadId GpsTaskHandle;
 osThreadId KFTaskHandle;
 osThreadId RadarTaskHandle;
 osThreadId ExButtonIntTaskHandle;
-osThreadId LcdTaskHandle;
 osThreadId MotorTaskHandle;
 osThreadId MainTaskHandle;
 osThreadId ObjectDetectTasHandle;
@@ -63,9 +64,22 @@ osMessageQId ButtonQueueHandle;
 osMutexId PrintMtxHandle;
 osSemaphoreId VelSemaphoreHandle;
 /* USER CODE BEGIN PV */
-uint8_t Rx_byte, Rx_indx, Transfer_cplt, Rx_Buffer[100], msg[40]; // UART
-int8_t v, w; // vehicle velocities
+// UART stuff
+uint8_t Rx_byte, Rx_indx, Transfer_cplt, Rx_Buffer[100], msg[40];
+// velocities
+int8_t v, w;
+// speed of sound
+const float speedOfSound = 0.0343/2;
+float distance;
+// timer - ultrasonic
+uint32_t IC_Val1 = 0;
+uint32_t IC_Val2 = 0;
+uint32_t Difference = 0;
+uint8_t Is_First_Captured = 0;  // is the first value captured ?
+uint8_t Distance  = 0;
+uint8_t detect = 0;
 
+// custom structures for IMU, gps data topics
 typedef struct
 {
 	float ax;
@@ -98,24 +112,18 @@ typedef struct
 
 } GpsData;
 
-typedef struct
-{
-	uint32_t timestamp;
-	float coef;
-} UartData;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM1_Init(void);
 void StartImuTask(void const * argument);
 void StartGpsTask(void const * argument);
 void StartKFTask(void const * argument);
 void StartRadarTask(void const * argument);
 void StartExButtonIntTask(void const * argument);
-void StartLcdTask(void const * argument);
 void StartMotorTask(void const * argument);
 void StartMainTask(void const * argument);
 void StartObjectDetectTask(void const * argument);
@@ -125,7 +133,38 @@ static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 // UART callback
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
-void EmptyBuffer(char* buf);
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
+
+// empty a string buffer
+void EmptyBuffer(uint8_t* buf){
+	uint8_t i;
+	int s = strlen(buf);
+
+	for (i=0; i<s; i++) {
+		buf[i] = 0;
+	}
+}
+
+// read stuff from the HCSR04 supersonic sensor
+// Triggers the sensor to start the measurement.
+// It will pull the TRIG Pin HIGH for 10 microseconds, and then pull it LOW.
+// This will force the sensor to start the measurement, and the sensor will pull the ECHO Pin HIGH for the respective amount of time
+// To measure this time, we will enable the Timer interrupt, so that we can capture this Rising and falling edges
+void HCSR04_Read (void)
+{
+	HAL_GPIO_WritePin(Trig_GPIO_Port, Trig_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+	delay(10);  // wait for 10 us
+	HAL_GPIO_WritePin(Trig_GPIO_Port, Trig_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
+
+	__HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC1);
+}
+
+// delay function for the supersonic sensor
+void delay(uint16_t time)
+{
+	__HAL_TIM_SET_COUNTER(&htim1, 0);
+	while (__HAL_TIM_GET_COUNTER (&htim1) < time);
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -140,7 +179,6 @@ void EmptyBuffer(char* buf);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -162,11 +200,13 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_TIM1_Init();
 
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1); // to get IC_CaptureCallback
   /* USER CODE END 2 */
 
   /* Create the mutex(es) */
@@ -230,27 +270,23 @@ int main(void)
   RadarTaskHandle = osThreadCreate(osThread(RadarTask), NULL);
 
   /* definition and creation of ExButtonIntTask */
-  osThreadDef(ExButtonIntTask, StartExButtonIntTask, osPriorityHigh, 0, 128);
+  osThreadDef(ExButtonIntTask, StartExButtonIntTask, osPriorityAboveNormal, 0, 128);
   ExButtonIntTaskHandle = osThreadCreate(osThread(ExButtonIntTask), NULL);
 
-  /* definition and creation of LcdTask */
-  osThreadDef(LcdTask, StartLcdTask, osPriorityLow, 0, 128);
-  LcdTaskHandle = osThreadCreate(osThread(LcdTask), NULL);
-
   /* definition and creation of MotorTask */
-  osThreadDef(MotorTask, StartMotorTask, osPriorityAboveNormal, 0, 128);
+  osThreadDef(MotorTask, StartMotorTask, osPriorityNormal, 0, 128);
   MotorTaskHandle = osThreadCreate(osThread(MotorTask), NULL);
 
   /* definition and creation of MainTask */
-  osThreadDef(MainTask, StartMainTask, osPriorityNormal, 0, 128);
+  osThreadDef(MainTask, StartMainTask, osPriorityHigh, 0, 128);
   MainTaskHandle = osThreadCreate(osThread(MainTask), NULL);
 
   /* definition and creation of ObjectDetectTas */
-  osThreadDef(ObjectDetectTas, StartObjectDetectTask, osPriorityHigh, 0, 128);
+  osThreadDef(ObjectDetectTas, StartObjectDetectTask, osPriorityAboveNormal, 0, 128);
   ObjectDetectTasHandle = osThreadCreate(osThread(ObjectDetectTas), NULL);
 
   /* definition and creation of UartTask */
-  osThreadDef(UartTask, StartUartTask, osPriorityAboveNormal, 0, 128);
+  osThreadDef(UartTask, StartUartTask, osPriorityNormal, 0, 128);
   UartTaskHandle = osThreadCreate(osThread(UartTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -293,9 +329,9 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
-  RCC_OscInitStruct.PLL.PLLN = 336;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 84;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -325,6 +361,55 @@ static void MX_NVIC_Init(void)
   /* EXTI15_10_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 100-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65536-1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_IC_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
 }
 
 /**
@@ -376,7 +461,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|Trig_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, YellowLed_Pin|RedLed_Pin|GreenLed_Pin|BlueLed_Pin, GPIO_PIN_RESET);
@@ -387,12 +472,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : LD2_Pin Trig_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin|Trig_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : YellowLed_Pin RedLed_Pin GreenLed_Pin BlueLed_Pin */
   GPIO_InitStruct.Pin = YellowLed_Pin|RedLed_Pin|GreenLed_Pin|BlueLed_Pin;
@@ -471,6 +556,70 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   	HAL_UART_Transmit(&huart2, &Rx_byte, 1, 100);
 	}
 }
+
+// internal timer callback
+// First Timestamp is captured, when the rising edge is detected. The polarity is now set for the falling edge
+// Second Timestamp will be captured on the falling edge
+// Difference between the Timestamps will be calculated. This Difference will be microseconds, as the timer is running at 1 MHz
+// Based on the Difference value, the distance is calculated using the formula given in the datasheet
+// Finally, the Interrupt will be disabled, so that we don’t capture any unwanted signals.
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+	if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)  // if the interrupt source is channel1
+	{
+		if (Is_First_Captured==0) // if the first value is not captured
+		{
+			IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1); // read the first value
+			Is_First_Captured = 1;  // set the first captured as true
+			// Now change the polarity to falling edge
+			__HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+		}
+
+		else if (Is_First_Captured==1)   // if the first is already captured
+		{
+			IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);  // read second value
+			__HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+
+			if (IC_Val2 > IC_Val1)
+			{
+				Difference = IC_Val2-IC_Val1;
+			}
+
+			else if (IC_Val1 > IC_Val2)
+			{
+				Difference = (0xffff - IC_Val1) + IC_Val2;
+			}
+
+			Distance = Difference * .034/2;
+
+	  	// print object distance
+//			sprintf(msg, "dist: %d\r\n", Distance);
+//			HAL_UART_Transmit(&huart2, msg, strlen(msg), 1000);
+//			EmptyBuffer(msg);
+
+			// if an object is too close, STOP THE VEHICLE
+	  	if (Distance < 20){
+	    	// when detecting an object, send a signal to the object-detection-handle thread
+				detect = 1;
+	    	osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
+	  	}
+
+	  	// if there is no object, allow the vehicle to move again
+	  	if (Distance >=20){
+	    	// signal to the object-detection thread that we no longer detect an object
+				detect = 0;
+				osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
+	  	}
+
+			Is_First_Captured = 0; // set it back to false
+
+			// set polarity to rising edge
+			__HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+			__HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC1);
+		}
+	}
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartImuTask */
@@ -601,38 +750,14 @@ void StartRadarTask(void const * argument)
 	uint8_t i = 0; // 8 bits means that after 256 it goes back to 0
   for(;;)
   {
-  	// Get the RTOS kernel tick count
-  	uint32_t  t =  osKernelSysTick();
+  	// read from the supersonic sensor
+  	HAL_GPIO_WritePin(Trig_GPIO_Port, Trig_Pin, GPIO_PIN_SET);  // pull the TRIG pin HIGH
+  	delay(10);  // wait for 10 us
+  	HAL_GPIO_WritePin(Trig_GPIO_Port, Trig_Pin, GPIO_PIN_RESET);  // pull the TRIG pin low
 
-  	// at iteration #200 and every 256 (2^8) iterations, "detect an object"
-  	if (i == 200){
-    	osMutexWait(PrintMtxHandle, osWaitForever);
-    	sprintf(msg, "An object!\r\n");
-    	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-    	EmptyBuffer(msg);
-    	osMutexRelease(PrintMtxHandle);
-
-    	// when detecting an object, send a signal to the object-detection-handle thread
-			osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
-  	}
-
-  	// stop detecting the object 50 iterations after you detected it
-  	if (i == 250){
-    	osMutexWait(PrintMtxHandle, osWaitForever);
-    	sprintf(msg, "No objects.\r\n");
-    	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-    	EmptyBuffer(msg);
-    	osMutexRelease(PrintMtxHandle);
-
-    	// signal to the object-detection thread that we no longer detect an object
-			osSignalSet(ObjectDetectTasHandle, SIGNAL_OBJECT_DETECT);
-  	}
-
-  	// Radar signal every 0.05 sec
-    osDelay(50);
-
-    // increment counter
-    ++i;
+  	__HAL_TIM_ENABLE_IT(&htim1, TIM_IT_CC1);
+  	// delay for 0.05 sec -> pretty normal radar frequency
+  	osDelay(50);
   }
   /* USER CODE END StartRadarTask */
 }
@@ -663,10 +788,9 @@ void StartExButtonIntTask(void const * argument)
   	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	EmptyBuffer(msg);
 
-  	// toggle led
-  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_13);
-	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13);
-	  if (red_trig == GPIO_PIN_SET){
+  	// read redled state
+	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(RedLed_GPIO_Port, RedLed_Pin);
+	  if (red_trig == GPIO_PIN_RESET){
 	  	// stop the vehicle!!
 	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
 	  	v = 0; // update the velocity references
@@ -676,7 +800,9 @@ void StartExButtonIntTask(void const * argument)
 	  	EmptyBuffer(msg);
 	  	osSemaphoreRelease(VelSemaphoreHandle);
 	  	// turn on red light
-		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
+	  	// turn off green light
+		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
 	  } else {
 	  	// start the vehicle
 	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
@@ -687,33 +813,12 @@ void StartExButtonIntTask(void const * argument)
 	  	EmptyBuffer(msg);
 	  	osSemaphoreRelease(VelSemaphoreHandle);
 	  	// turn on the green light
-		  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_SET);
+	  	// turn off the red light
+		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
 	  }
   }
   /* USER CODE END StartExButtonIntTask */
-}
-
-/* USER CODE BEGIN Header_StartLcdTask */
-/**
-* @brief Function implementing the LcdTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartLcdTask */
-void StartLcdTask(void const * argument)
-{
-  /* USER CODE BEGIN StartLcdTask */
-	osMutexWait(PrintMtxHandle, osWaitForever);
-	sprintf(msg, "LCD GO\r\n");
-	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-	EmptyBuffer(msg);
-	osMutexRelease(PrintMtxHandle);
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartLcdTask */
 }
 
 /* USER CODE BEGIN Header_StartMotorTask */
@@ -765,6 +870,9 @@ void StartMainTask(void const * argument)
 
 	// enable UART receive
 	HAL_UART_Receive_IT(&huart2, &Rx_byte, 1);
+	// enable tim1 IT for radar object detection
+//  HAL_TIM_Base_Start_IT(&htim1);
+//  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1); // to get IC_CaptureCallback
 
   /* Infinite loop */
   for(;;)
@@ -794,28 +902,49 @@ void StartObjectDetectTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
+
+	// previous detections flag
+	uint8_t prev_detect = 0;
   /* Infinite loop */
   for(;;)
   {
   	//wait for signal
   	osSignalWait(SIGNAL_OBJECT_DETECT, osWaitForever);
 
-  	// print to uart
-  	sprintf(msg, "~~ Object (un)detected ~~\r\n");
-  	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
-  	EmptyBuffer(msg);
+  	// print to uart if something changed
+  	if (detect != prev_detect) {
+    	if (detect == 1) {
+      	sprintf(msg, "~~ DANGER! Object! ~~\r\n");
+      	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
+      	EmptyBuffer(msg);
 
-  	// stop the vehicle!!
-  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
-  	v = 0; // update the velocity references
-  	w = 0;
-  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
-  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
-  	EmptyBuffer(msg);
-  	osSemaphoreRelease(VelSemaphoreHandle);
+      	// turn on blue light
+      	HAL_GPIO_WritePin(BlueLed_GPIO_Port, BlueLed_Pin, GPIO_PIN_SET);
 
-  	// toggle led
-  	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_15);
+      	// stop the vehicle!!
+      	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+      	v = 0; // update the velocity references
+      	w = 0;
+      	// turn on red light
+      	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
+      	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+      	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
+      	EmptyBuffer(msg);
+      	osSemaphoreRelease(VelSemaphoreHandle);
+    	} else {
+      	sprintf(msg, "~~ Clear path. No objects. ~~\r\n");
+      	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
+      	EmptyBuffer(msg);
+
+      	// turn off blue light
+      	HAL_GPIO_WritePin(BlueLed_GPIO_Port, BlueLed_Pin, GPIO_PIN_RESET);
+      	// turn off red light
+      	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
+    	}
+
+    	// update previous detection
+    	prev_detect = detect;
+  	}
   }
   /* USER CODE END StartObjectDetectTask */
 }
@@ -853,6 +982,8 @@ void StartUartTask(void const * argument)
   	if (accel_flag == 1) {
   		if ( v == 0 ) {
   			v = 10;
+      	// turn on green light
+      	HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
   		} else {
     		v = v*1.1;
   		}
@@ -867,16 +998,6 @@ void StartUartTask(void const * argument)
   	osSemaphoreRelease(VelSemaphoreHandle);
   }
   /* USER CODE END StartUartTask */
-}
-
-// helper function to empty the contents of a buffer
-void EmptyBuffer(char* buf){
-	uint8_t i;
-	int s = strlen(buf);
-
-	for (i=0; i<s; i++) {
-		buf[i] = 0;
-	}
 }
 
 /**
