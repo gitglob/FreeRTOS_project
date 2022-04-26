@@ -788,35 +788,40 @@ void StartExButtonIntTask(void const * argument)
   	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	EmptyBuffer(msg);
 
-  	// read redled state
-	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(RedLed_GPIO_Port, RedLed_Pin);
-	  if (red_trig == GPIO_PIN_RESET){
-	  	// stop the vehicle!!
-	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
-	  	v = 0; // update the velocity references
-	  	w = 0;
-	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
-	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-	  	EmptyBuffer(msg);
-	  	osSemaphoreRelease(VelSemaphoreHandle);
-	  	// turn on red light
-		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
-	  	// turn off green light
-		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
-	  } else {
-	  	// start the vehicle
-	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
-	  	v = 10; // update the velocity references
-	  	w = 0;
-	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
-	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-	  	EmptyBuffer(msg);
-	  	osSemaphoreRelease(VelSemaphoreHandle);
-	  	// turn on the green light
-		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_SET);
-	  	// turn off the red light
-		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
-	  }
+  	// only if there are no detected objects the emergency button should do something
+  	if (detect == 0) {
+    	// read redled state
+  	  GPIO_PinState red_trig = HAL_GPIO_ReadPin(RedLed_GPIO_Port, RedLed_Pin);
+  	  if (red_trig == GPIO_PIN_RESET){
+  	  	// stop the vehicle!!
+  	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+  	  	v = 0; // update the velocity references
+  	  	w = 0;
+  	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+  	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	  	EmptyBuffer(msg);
+  	  	osSemaphoreRelease(VelSemaphoreHandle);
+
+  	  	// turn on red light
+  		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
+  	  	// turn off green light
+  		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
+  	  } else {
+  	  	// start the vehicle
+  	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
+  	  	v = 10; // update the velocity references
+  	  	w = 0;
+  	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
+  	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	  	EmptyBuffer(msg);
+  	  	osSemaphoreRelease(VelSemaphoreHandle);
+
+  	  	// turn on the green light
+  		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_SET);
+  	  	// turn off the red light
+  		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
+  	  }
+  	}
   }
   /* USER CODE END StartExButtonIntTask */
 }
@@ -837,8 +842,8 @@ void StartMotorTask(void const * argument)
 	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
 	EmptyBuffer(msg);
 	osMutexRelease(PrintMtxHandle);
-	v = 14; // 14 m/sec linear velocity
-	w = 0.2; // 0.2 rad/sec angular velocity
+	v = 0; // 14 m/sec linear velocity
+	w = 0; // 0.2 rad/sec angular velocity
   for(;;)
   {
   	// block until resumed
@@ -871,7 +876,7 @@ void StartMainTask(void const * argument)
 	// enable UART receive
 	HAL_UART_Receive_IT(&huart2, &Rx_byte, 1);
 	// enable tim1 IT for radar object detection
-//  HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_Base_Start_IT(&htim1);
 //  HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1); // to get IC_CaptureCallback
 
   /* Infinite loop */
@@ -927,6 +932,8 @@ void StartObjectDetectTask(void const * argument)
       	w = 0;
       	// turn on red light
       	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
+      	// turn off green light
+      	HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
       	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
       	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
       	EmptyBuffer(msg);
@@ -938,8 +945,6 @@ void StartObjectDetectTask(void const * argument)
 
       	// turn off blue light
       	HAL_GPIO_WritePin(BlueLed_GPIO_Port, BlueLed_Pin, GPIO_PIN_RESET);
-      	// turn off red light
-      	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
     	}
 
     	// update previous detection
@@ -971,19 +976,15 @@ void StartUartTask(void const * argument)
   	osEvent retval_uart = osMessageGet(UartQueueHandle, osWaitForever);
   	uint8_t accel_flag = retval_uart.value.p;
 
-  	osMutexWait(PrintMtxHandle, osWaitForever);
-  	sprintf(msg, "Flag: %lu\r\n", accel_flag);
-  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
-  	EmptyBuffer(msg);
-  	osMutexRelease(PrintMtxHandle);
-
   	// if the passed flag is 1, we accelerate by 10%, otherwise, we decelerate by 10%
   	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
   	if (accel_flag == 1) {
   		if ( v == 0 ) {
   			v = 10;
+      	// turn off red light
+      	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_RESET);
       	// turn on green light
-      	HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
+      	HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_SET);
   		} else {
     		v = v*1.1;
   		}
