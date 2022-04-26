@@ -82,33 +82,32 @@ uint8_t detect = 0;
 // custom structures for IMU, gps data topics
 typedef struct
 {
-	float ax;
-	float ay;
-	float az;
+	uint16_t ax;
+	uint16_t ay;
+	uint16_t az;
 } LinAcc;
 
 typedef struct
 {
-	float wx;
-	float wy;
-	float wz;
+	uint16_t wx;
+	uint16_t wy;
+	uint16_t wz;
 } AngVel;
 
 typedef struct
 {
 	uint32_t timestamp;
-	LinAcc lin_acc;
-	AngVel ang_vel;
-
+	AngVel w;
+	LinAcc a;
 } ImuData;
 
 
 typedef struct
 {
 	uint32_t timestamp;
-	float x;
-	float y;
-	float z;
+	uint16_t x;
+	uint16_t y;
+	uint16_t z;
 
 } GpsData;
 
@@ -138,7 +137,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim);
 // empty a string buffer
 void EmptyBuffer(uint8_t* buf){
 	uint8_t i;
-	int s = strlen(buf);
+	uint8_t s = strlen(buf);
 
 	for (i=0; i<s; i++) {
 		buf[i] = 0;
@@ -641,16 +640,28 @@ void StartImuTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
+  	// print that an imu signal arrived
+  	osMutexWait(PrintMtxHandle, osWaitForever);
+  	sprintf(msg, "<- IMU\r\n");
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+  	osMutexRelease(PrintMtxHandle);
+
   	// Get the RTOS kernel tick count
-  	uint32_t  t =  osKernelSysTick();
+  	uint32_t t =  osKernelSysTick();
 
   	// pseudo-measurements -  we assume that the the IMU gives perfect measurements that indicate that the vehicle moves in a circle with constant speeds
-  	LinAcc imu_lin_acc = {0.1, 0.0, 0.0};
-  	AngVel imu_ang_vel = {0.0, 0.0, 0.2};
-  	ImuData imu_readings = {t, imu_lin_acc, imu_ang_vel};
+  	AngVel imu_ang_vel = {0, 0, 20}; // rad/(100*sec)
+  	LinAcc imu_lin_acc = {10, 0, 0}; // m/(100*sec^2)
+  	ImuData imu_readings = {t, imu_ang_vel, imu_lin_acc};
 
   	// send the data to the queue
-  	osMessagePut(ImuQueueHandle, (uint32_t) &imu_readings, 100);
+  	uint8_t ret = osMessagePut(ImuQueueHandle, (uint32_t) &imu_readings, osWaitForever);
+//  	osMutexWait(PrintMtxHandle, osWaitForever);
+//  	sprintf(msg, "IMU put return : %d\r\n", ret);
+//  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+//  	EmptyBuffer(msg);
+//  	osMutexRelease(PrintMtxHandle);
 
   	osDelay(10); // IMU signal every 0.01 sec
   }
@@ -676,17 +687,24 @@ void StartGpsTask(void const * argument)
 	/* Infinite loop */
   for(;;)
   {
+  	// print that a gps signal arrived
+  	osMutexWait(PrintMtxHandle, osWaitForever);
+  	sprintf(msg, "<- GPS\r\n");
+  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+  	EmptyBuffer(msg);
+  	osMutexRelease(PrintMtxHandle);
+
   	// Get the RTOS kernel tick count
   	uint32_t  t =  osKernelSysTick();
 
   	// GPS pseudo-measurements
-  	float gps_x = 1.1;
-  	float gps_y = 2.2;
-  	float gps_z = 3.3;
+  	uint16_t gps_x = 110; // in m/100
+  	uint16_t gps_y = 220; // in m/100
+  	uint16_t gps_z = 330; // in m/100
   	GpsData gps_readings = {t, gps_x, gps_y, gps_z};
 
   	// send the data to the queue
-  	osMessagePut(GpsQueueHandle, (uint32_t) &gps_readings, 100);
+  	osMessagePut(GpsQueueHandle, (uint32_t) &gps_readings, osWaitForever);
 
   	osDelay(100); // GPS signal every 0.1 sec
   }
@@ -712,20 +730,36 @@ void StartKFTask(void const * argument)
 	/* Infinite loop */
   for(;;)
   {
-  	// Get the RTOS kernel tick count
-  	uint32_t  t =  osKernelSysTick();
-
   	// receive GPS and IMU data from queues
+  	// osStatus -> 0:osOK, 64:osEventTimeout, 16:osEventMessage 128:osErrorParameter
   	osEvent retval_imu = osMessageGet(ImuQueueHandle, 0);
 //  	((ImuData*)retval_imu.value.p)->timestamp;
 //  	((ImuData*)retval_imu.value.p)->lin_acc;
 //  	((ImuData*)retval_imu.value.p)->ang_vel;
+
+  	if (retval_imu.status == osEventMessage ) {
+			// Kalman filter corrections based on the GPS global position
+			osMutexWait(PrintMtxHandle, osWaitForever);
+			sprintf(msg, "IMU - KF update...\r\n");
+			HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+			EmptyBuffer(msg);
+			osMutexRelease(PrintMtxHandle);
+  	}
+
   	osEvent retval_gps = osMessageGet(GpsQueueHandle, 0);
 //  	((GpsData*)retval_imu.value.p)->timestamp;
 //  	((GpsData*)retval_imu.value.p)->x;
 //  	((GpsData*)retval_imu.value.p)->y;
 //  	((GpsData*)retval_imu.value.p)->z;
 
+  	if (retval_gps.status == osEventMessage ) {
+			// Kalman filter corrections based on the GPS global position
+			osMutexWait(PrintMtxHandle, osWaitForever);
+			sprintf(msg, "GPS - KF correction...\r\n");
+			HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
+			EmptyBuffer(msg);
+			osMutexRelease(PrintMtxHandle);
+  	}
   }
   /* USER CODE END StartKFTask */
 }
@@ -784,9 +818,11 @@ void StartExButtonIntTask(void const * argument)
   	osSignalWait(SIGNAL_BUTTON_PRESS, osWaitForever);
 
   	// print to uart
-  	sprintf(msg, "Button pressed...\r\n");
+  	osMutexWait(PrintMtxHandle, osWaitForever);
+  	sprintf(msg, "Emergency button pressed...\r\n");
   	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	EmptyBuffer(msg);
+  	osMutexRelease(PrintMtxHandle);
 
   	// only if there are no detected objects the emergency button should do something
   	if (detect == 0) {
@@ -797,10 +833,13 @@ void StartExButtonIntTask(void const * argument)
   	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
   	  	v = 0; // update the velocity references
   	  	w = 0;
+  	  	osSemaphoreRelease(VelSemaphoreHandle);
+
+  	  	osMutexWait(PrintMtxHandle, osWaitForever);
   	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
   	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	  	EmptyBuffer(msg);
-  	  	osSemaphoreRelease(VelSemaphoreHandle);
+  	  	osMutexRelease(PrintMtxHandle);
 
   	  	// turn on red light
   		  HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
@@ -811,10 +850,13 @@ void StartExButtonIntTask(void const * argument)
   	  	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
   	  	v = 10; // update the velocity references
   	  	w = 0;
+  	  	osSemaphoreRelease(VelSemaphoreHandle);
+
+  	  	osMutexWait(PrintMtxHandle, osWaitForever);
   	  	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
   	  	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	  	EmptyBuffer(msg);
-  	  	osSemaphoreRelease(VelSemaphoreHandle);
+  	  	osMutexRelease(PrintMtxHandle);
 
   	  	// turn on the green light
   		  HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_SET);
@@ -919,9 +961,11 @@ void StartObjectDetectTask(void const * argument)
   	// print to uart if something changed
   	if (detect != prev_detect) {
     	if (detect == 1) {
+    		osMutexWait(PrintMtxHandle, osWaitForever);
       	sprintf(msg, "~~ DANGER! Object! ~~\r\n");
       	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
       	EmptyBuffer(msg);
+      	osMutexRelease(PrintMtxHandle);
 
       	// turn on blue light
       	HAL_GPIO_WritePin(BlueLed_GPIO_Port, BlueLed_Pin, GPIO_PIN_SET);
@@ -930,18 +974,25 @@ void StartObjectDetectTask(void const * argument)
       	osSemaphoreWait(VelSemaphoreHandle, osWaitForever);
       	v = 0; // update the velocity references
       	w = 0;
+      	osSemaphoreRelease(VelSemaphoreHandle);
+
       	// turn on red light
       	HAL_GPIO_WritePin(RedLed_GPIO_Port, RedLed_Pin, GPIO_PIN_SET);
       	// turn off green light
       	HAL_GPIO_WritePin(GreenLed_GPIO_Port, GreenLed_Pin, GPIO_PIN_RESET);
+
+    		osMutexWait(PrintMtxHandle, osWaitForever);
       	sprintf(msg, "Lin. vel: %d Ang vel: %d\r\n", v, w);
       	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 200);
       	EmptyBuffer(msg);
-      	osSemaphoreRelease(VelSemaphoreHandle);
+      	osMutexRelease(PrintMtxHandle);
+
     	} else {
+    		osMutexWait(PrintMtxHandle, osWaitForever);
       	sprintf(msg, "~~ Clear path. No objects. ~~\r\n");
       	HAL_UART_Transmit(&huart2, msg, strlen(msg), 100);
       	EmptyBuffer(msg);
+      	osMutexRelease(PrintMtxHandle);
 
       	// turn off blue light
       	HAL_GPIO_WritePin(BlueLed_GPIO_Port, BlueLed_Pin, GPIO_PIN_RESET);
@@ -993,10 +1044,13 @@ void StartUartTask(void const * argument)
 				v = v*0.9;
 			}
   	}
+  	osSemaphoreRelease(VelSemaphoreHandle);
+
+  	osMutexWait(PrintMtxHandle, osWaitForever);
   	sprintf(msg, "Lin. vel: %d.%d Ang vel: %d.%d\r\n", v/10, v%10, w/10, w%10);
   	HAL_UART_Transmit(&huart2, msg, sizeof(msg), 100);
   	EmptyBuffer(msg);
-  	osSemaphoreRelease(VelSemaphoreHandle);
+  	osMutexRelease(PrintMtxHandle);
   }
   /* USER CODE END StartUartTask */
 }
